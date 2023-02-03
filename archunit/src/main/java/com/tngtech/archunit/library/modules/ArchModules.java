@@ -60,35 +60,35 @@ import static java.util.stream.Collectors.toMap;
  * not contained in any of the constructed modules.<br>
  * This class provides several entry points to create {@link ArchModule modules} from a set of {@link JavaClass classes}:<br>
  * <ul>
- *     <li>{@link #defineBy(Function)} - the most generic/flexible API</li>
+ *     <li>{@link #defineBy(IdentifierAssociation)} - the most generic/flexible API</li>
  *     <li>{@link #defineByPackages(String)} - an API similar to {@link Slices#matching(String)}</li>
  *     <li>{@link #defineByRootClasses(Predicate)} - an API that derives modules from the packages of some specific classes</li>
  * </ul>
  */
 @PublicAPI(usage = ACCESS)
-public final class ArchModules extends ForwardingCollection<ArchModule> {
-    private final Map<Identifier, ArchModule> modulesByIdentifier;
-    private final Map<String, ArchModule> modulesByName;
+public final class ArchModules<DESCRIPTOR extends ArchModule.Descriptor> extends ForwardingCollection<ArchModule<DESCRIPTOR>> {
+    private final Map<Identifier, ArchModule<DESCRIPTOR>> modulesByIdentifier;
+    private final Map<String, ArchModule<DESCRIPTOR>> modulesByName;
 
-    private ArchModules(Set<ArchModule> modules) {
+    private ArchModules(Set<ArchModule<DESCRIPTOR>> modules) {
         this.modulesByIdentifier = groupBy(modules, ArchModule::getIdentifier, "identifier");
         this.modulesByName = groupBy(modules, ArchModule::getName, "name");
 
-        SetMultimap<ArchModule.Identifier, ModuleDependency> moduleDependenciesByOrigin = HashMultimap.create();
+        SetMultimap<ArchModule.Identifier, ModuleDependency<DESCRIPTOR>> moduleDependenciesByOrigin = HashMultimap.create();
         modules.forEach(it -> moduleDependenciesByOrigin.putAll(it.getIdentifier(), createModuleDependencies(it, modules)));
 
-        SetMultimap<ArchModule.Identifier, ModuleDependency> moduleDependenciesByTarget = HashMultimap.create();
+        SetMultimap<ArchModule.Identifier, ModuleDependency<DESCRIPTOR>> moduleDependenciesByTarget = HashMultimap.create();
         moduleDependenciesByOrigin.values()
                 .forEach(moduleDependency -> moduleDependenciesByTarget.put(moduleDependency.getTarget().getIdentifier(), moduleDependency));
 
         modules.forEach(it -> it.setModuleDependencies(moduleDependenciesByOrigin.get(it.getIdentifier()), moduleDependenciesByTarget.get(it.getIdentifier())));
     }
 
-    private static <KEY> Map<KEY, ArchModule> groupBy(
-            Set<ArchModule> modules,
-            Function<ArchModule, KEY> getKey, String keyName
+    private static <D extends ArchModule.Descriptor, KEY> Map<KEY, ArchModule<D>> groupBy(
+            Set<ArchModule<D>> modules,
+            Function<ArchModule<D>, KEY> getKey, String keyName
     ) {
-        Map<KEY, Collection<ArchModule>> modulesByKey = modules.stream().collect(toMultimap(getKey, identity(), HashMultimap::create)).asMap();
+        Map<KEY, Collection<ArchModule<D>>> modulesByKey = modules.stream().collect(toMultimap(getKey, identity(), HashMultimap::create)).asMap();
         SortedSet<KEY> duplicateKeys = modulesByKey.entrySet().stream()
                 .filter(it -> it.getValue().size() > 1)
                 .map(Map.Entry::getKey)
@@ -102,16 +102,16 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
                 .collect(toMap(Map.Entry::getKey, entry -> getOnlyElement(entry.getValue())));
     }
 
-    private ImmutableSet<ModuleDependency> createModuleDependencies(ArchModule origin, Set<ArchModule> modules) {
-        ImmutableSet.Builder<ModuleDependency> moduleDependencies = ImmutableSet.builder();
-        for (ArchModule target : Sets.difference(modules, origin)) {
+    private ImmutableSet<ModuleDependency<DESCRIPTOR>> createModuleDependencies(ArchModule<DESCRIPTOR> origin, Set<ArchModule<DESCRIPTOR>> modules) {
+        ImmutableSet.Builder<ModuleDependency<DESCRIPTOR>> moduleDependencies = ImmutableSet.builder();
+        for (ArchModule<DESCRIPTOR> target : Sets.difference(modules, origin)) {
             ModuleDependency.tryCreate(origin, target).ifPresent(moduleDependencies::add);
         }
         return moduleDependencies.build();
     }
 
     @Override
-    protected Collection<ArchModule> delegate() {
+    protected Collection<ArchModule<DESCRIPTOR>> delegate() {
         return modulesByIdentifier.values();
     }
 
@@ -121,7 +121,7 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
      *         This method will throw an exception if no matching {@link ArchModule} is contained.
      */
     @PublicAPI(usage = ACCESS)
-    public ArchModule getByIdentifier(String... identifier) {
+    public ArchModule<DESCRIPTOR> getByIdentifier(String... identifier) {
         return tryGetByIdentifier(identifier).orElseThrow(() ->
                 new IllegalArgumentException(String.format("There is no %s with identifier %s", ArchModule.class.getSimpleName(), Arrays.toString(identifier))));
     }
@@ -132,7 +132,7 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
      *         or {@link Optional#empty()} if no matching {@link ArchModule} is contained.
      */
     @PublicAPI(usage = ACCESS)
-    public Optional<ArchModule> tryGetByIdentifier(String... identifier) {
+    public Optional<ArchModule<DESCRIPTOR>> tryGetByIdentifier(String... identifier) {
         return Optional.ofNullable(modulesByIdentifier.get(Identifier.from(identifier)));
     }
 
@@ -143,7 +143,7 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
      * @see #tryGetByName(String)
      */
     @PublicAPI(usage = ACCESS)
-    public ArchModule getByName(String name) {
+    public ArchModule<DESCRIPTOR> getByName(String name) {
         return tryGetByName(name).orElseThrow(() ->
                 new IllegalArgumentException(String.format("There is no %s with name %s", ArchModule.class.getSimpleName(), name)));
     }
@@ -155,7 +155,7 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
      * @see #getByName(String)
      */
     @PublicAPI(usage = ACCESS)
-    public Optional<ArchModule> tryGetByName(String name) {
+    public Optional<ArchModule<DESCRIPTOR>> tryGetByName(String name) {
         return Optional.ofNullable(modulesByName.get(name));
     }
 
@@ -314,6 +314,23 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
     }
 
     /**
+     * A generic interface to be extended by users for providing custom implementations of {@link ArchModule.Descriptor}
+     * that can carry along more meta-information from the modularized {@link JavaClasses}.
+     * @param <DESCRIPTOR> The type of the created {@link ArchModule.Descriptor}
+     */
+    @FunctionalInterface
+    @PublicAPI(usage = INHERITANCE)
+    public interface DescriptorCreator<DESCRIPTOR extends ArchModule.Descriptor> {
+
+        /**
+         * @param identifier The {@link ArchModule.Identifier} of the respective {@link ArchModule}
+         * @param containedClasses The {@link JavaClass classes} contained in the respective {@link ArchModule}
+         * @return A specific instance of a subtype of {@link ArchModule.Descriptor}
+         */
+        DESCRIPTOR create(Identifier identifier, Set<JavaClass> containedClasses);
+    }
+
+    /**
      * An element of the fluent API to create {@link ArchModules}
      */
     @PublicAPI(usage = ACCESS)
@@ -361,36 +378,24 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
         }
 
         /**
-         * Derives {@link ArchModules} from the passed {@link JavaClasses} via the specified modularization strategy
-         * by the fluent API (e.g. by package identifier or by generic mapping function). In particular,
-         * the passed {@link JavaClasses} will be partitioned and sorted into matching instances of {@link ArchModule}.
-         *
-         * @param classes The classes to modularize
-         * @return An instance of {@link ArchModules} containing individual {@link ArchModule}s which in turn contain the partitioned classes
+         * Allows to fully customize the {@link ArchModule.Descriptor} of the created {@link ArchModule}s. This allows to
+         * pass on meta-data from the contained classes additionally to any derived {@link ArchModule#getName() module name}.
+         * @param descriptorCreator A generic function specifying how to create the {@link ArchModule.Descriptor}
+         * @return A fluent API to further customize how to create {@link ArchModules}
+         * @param <D> The specific subtype of the {@link ArchModule.Descriptor} to create
          */
         @PublicAPI(usage = ACCESS)
-        public ArchModules modularize(JavaClasses classes) {
-            SetMultimap<Identifier, JavaClass> classesByIdentifier = groupClassesByIdentifier(classes);
+        public <D extends ArchModule.Descriptor> WithGenericDescriptor<D> describeBy(DescriptorCreator<D> descriptorCreator) {
+            return new WithGenericDescriptor<>(identifierAssociation, descriptorCreator);
+        }
 
-                Set<ArchModule> modules = new HashSet<>();
-                asMap(classesByIdentifier).forEach((identifier, containedClasses) -> {
-                    String name = deriveNameFunction.apply(identifier);
-                    modules.add(new ArchModule(identifier, name, containedClasses));
-                });
-                return new ArchModules(modules);
-            }
-
-        private SetMultimap<Identifier, JavaClass> groupClassesByIdentifier(JavaClasses classes) {
-            identifierAssociation.init(classes);
-
-            SetMultimap<Identifier, JavaClass> classesByIdentifier = HashMultimap.create();
-            for (JavaClass javaClass : classes) {
-                Identifier identifier = identifierAssociation.associate(javaClass);
-                if (identifier.shouldBeConsidered()) {
-                    classesByIdentifier.put(identifier, javaClass);
-                }
-            }
-            return classesByIdentifier;
+        /**
+         * @see WithGenericDescriptor#modularize(JavaClasses)
+         */
+        @PublicAPI(usage = ACCESS)
+        public ArchModules<?> modularize(JavaClasses classes) {
+            return describeBy((identifier, __) -> ArchModule.Descriptor.create(deriveNameFunction.apply(identifier)))
+                    .modularize(classes);
         }
 
         private static final Function<Identifier, String> DEFAULT_NAMING_STRATEGY =
@@ -398,6 +403,53 @@ public final class ArchModules extends ForwardingCollection<ArchModule> {
 
         private static String joinIdentifier(Identifier identifier) {
             return Joiner.on(":").join(identifier);
+        }
+
+        /**
+         * An element of the fluent API to create {@link ArchModules}
+         */
+        @PublicAPI(usage = ACCESS)
+        public static final class WithGenericDescriptor<DESCRIPTOR extends ArchModule.Descriptor> {
+            private final IdentifierAssociation identifierAssociation;
+            private final DescriptorCreator<DESCRIPTOR> descriptorCreator;
+
+            private WithGenericDescriptor(IdentifierAssociation identifierAssociation, DescriptorCreator<DESCRIPTOR> descriptorCreator) {
+                this.identifierAssociation = checkNotNull(identifierAssociation);
+                this.descriptorCreator = checkNotNull(descriptorCreator);
+            }
+
+            /**
+             * Derives {@link ArchModules} from the passed {@link JavaClasses} via the specified modularization strategy
+             * by the fluent API (e.g. by package identifier or by generic mapping function). In particular,
+             * the passed {@link JavaClasses} will be partitioned and sorted into matching instances of {@link ArchModule}.
+             *
+             * @param classes The classes to modularize
+             * @return An instance of {@link ArchModules} containing individual {@link ArchModule}s which in turn contain the partitioned classes
+             */
+            @PublicAPI(usage = ACCESS)
+            public ArchModules<DESCRIPTOR> modularize(JavaClasses classes) {
+                SetMultimap<Identifier, JavaClass> classesByIdentifier = groupClassesByIdentifier(classes);
+
+                Set<ArchModule<DESCRIPTOR>> modules = new HashSet<>();
+                asMap(classesByIdentifier).forEach((identifier, containedClasses) -> {
+                    DESCRIPTOR descriptor = descriptorCreator.create(identifier, containedClasses);
+                    modules.add(new ArchModule<>(identifier, descriptor, containedClasses));
+                });
+                return new ArchModules<>(modules);
+            }
+
+            private SetMultimap<Identifier, JavaClass> groupClassesByIdentifier(JavaClasses classes) {
+                identifierAssociation.init(classes);
+
+                SetMultimap<Identifier, JavaClass> classesByIdentifier = HashMultimap.create();
+                for (JavaClass javaClass : classes) {
+                    Identifier identifier = identifierAssociation.associate(javaClass);
+                    if (identifier.shouldBeConsidered()) {
+                        classesByIdentifier.put(identifier, javaClass);
+                    }
+                }
+                return classesByIdentifier;
+            }
         }
     }
 }
